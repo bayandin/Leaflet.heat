@@ -11,17 +11,28 @@ L.HeatLayer = (L.Layer ? L.Layer : L.Class).extend({
     // },
 
     initialize: function (latlngs, options) {
-        this._latlngs = latlngs;
+        class RBushPoints extends RBush {
+            toBBox([y, x]) { return {minX: x, minY: y, maxX: x, maxY: y}; }
+            compareMinX(a, b) { return a.x - b.x; }
+            compareMinY(a, b) { return a.y - b.y; }
+        }
+
+        this._tree = new RBushPoints();
+        this._tree.load(latlngs);
+
         L.setOptions(this, options);
     },
 
     setLatLngs: function (latlngs) {
-        this._latlngs = latlngs;
+        this._tree.clear();
+        this._tree.load(latlngs);
+
         return this.redraw();
     },
 
     addLatLng: function (latlng) {
-        this._latlngs.push(latlng);
+        this._tree.insert(latlng);
+
         return this.redraw();
     },
 
@@ -131,11 +142,7 @@ L.HeatLayer = (L.Layer ? L.Layer : L.Class).extend({
         }
         var data = [],
             r = this._heat._r,
-            size = this._map.getSize(),
-            bounds = new L.Bounds(
-                L.point([-r, -r]),
-                size.add([r, r])),
-
+            bounds = this._map.getBounds(),
             max = this.options.max === undefined ? 1 : this.options.max,
             maxZoom = this.options.maxZoom === undefined ? this._map.getMaxZoom() : this.options.maxZoom,
             v = 1 / Math.pow(2, Math.max(0, Math.min(maxZoom - this._map.getZoom(), 12))),
@@ -144,31 +151,36 @@ L.HeatLayer = (L.Layer ? L.Layer : L.Class).extend({
             panePos = this._map._getMapPanePos(),
             offsetX = panePos.x % cellSize,
             offsetY = panePos.y % cellSize,
-            i, len, p, cell, x, y, j, len2, k;
+            i, len, p, cell, x, y, j, len2, k, points;
 
         // console.time('process');
-        for (i = 0, len = this._latlngs.length; i < len; i++) {
-            p = this._map.latLngToContainerPoint(this._latlngs[i]);
-            if (bounds.contains(p)) {
-                x = Math.floor((p.x - offsetX) / cellSize) + 2;
-                y = Math.floor((p.y - offsetY) / cellSize) + 2;
+        points = this._tree.search({
+            minX: bounds._southWest.lng,
+            minY: bounds._southWest.lat,
+            maxX: bounds._northEast.lng,
+            maxY: bounds._northEast.lat,
+        });
 
-                var alt =
-                    this._latlngs[i].alt !== undefined ? this._latlngs[i].alt :
-                    this._latlngs[i][2] !== undefined ? +this._latlngs[i][2] : 1;
-                k = alt * v;
+        for (i = 0, len = points.length; i < len; i++) {
+            p = this._map.latLngToContainerPoint(points[i]);
+            x = Math.floor((p.x - offsetX) / cellSize) + 2;
+            y = Math.floor((p.y - offsetY) / cellSize) + 2;
 
-                grid[y] = grid[y] || [];
-                cell = grid[y][x];
+            const alt =
+                points[i].alt !== undefined ? points[i].alt :
+                points[i][2] !== undefined ? +points[i][2] : 1;
+            k = alt * v;
 
-                if (!cell) {
-                    grid[y][x] = [p.x, p.y, k];
+            grid[y] = grid[y] || [];
+            cell = grid[y][x];
 
-                } else {
-                    cell[0] = (cell[0] * cell[2] + p.x * k) / (cell[2] + k); // x
-                    cell[1] = (cell[1] * cell[2] + p.y * k) / (cell[2] + k); // y
-                    cell[2] += k; // cumulated intensity value
-                }
+            if (!cell) {
+                grid[y][x] = [p.x, p.y, k];
+
+            } else {
+                cell[0] = (cell[0] * cell[2] + p.x * k) / (cell[2] + k); // x
+                cell[1] = (cell[1] * cell[2] + p.y * k) / (cell[2] + k); // y
+                cell[2] += k; // cumulated intensity value
             }
         }
 
